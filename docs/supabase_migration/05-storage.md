@@ -1,185 +1,168 @@
 # 5. Detailed Media Storage Guide
 
-This document provides a detailed guide to migrating and managing your media files using Supabase Storage. Supabase Storage is an S3-compatible object store that is perfect for storing and serving large files like audio and video.
+This document provides a detailed guide to migrating and managing your media files using Supabase Storage, with a focus on securing private media for verified users.
 
 ## 5.1. Understanding Buckets
 
 In Supabase Storage, all files are stored in **buckets**. A bucket is a container for files, similar to a directory.
 
 ### 5.1.1. Creating a Bucket
-
 You can create a new bucket in the Supabase dashboard:
-
 1.  Go to your project's dashboard.
 2.  In the left sidebar, click on the "Storage" icon.
 3.  Click on the "New bucket" button.
-4.  You will need to provide a name for your bucket (e.g., `media_files`).
-5.  You will also need to choose whether the bucket is **public** or **private**.
+4.  Provide a name for your bucket. We will use `story-media`.
+5.  **Crucially, ensure the bucket is NOT marked as public.**
 
 ### 5.1.2. Public vs. Private Buckets
+*   **Public Buckets**: Files are accessible to anyone with the URL.
+*   **Private Buckets**: Files require a valid JWT or a signed URL for access. This is what we need for our protected content.
 
-*   **Public Buckets**: Files in a public bucket are accessible to anyone with the URL. This is useful for files that are meant to be publicly available, such as images, logos, or public audio/video files.
-*   **Private Buckets**: Files in a private bucket are not publicly accessible. To access a file in a private bucket, you need to provide a valid JWT (JSON Web Token) or a signed URL. This is useful for sensitive files or files that should only be accessible to specific users.
+Given the requirement that all stories are private to verified tribal members, we will use a **private** bucket named `story-media`.
 
-For the LingView application, we will use a **public** bucket for the media files, as the stories are meant to be publicly accessible. If we were to add user-specific content, we might use a private bucket for that.
+## 5.2. Accessing Private Files with Signed URLs
 
-## 5.2. Uploading Files from a React App
+Since our `story-media` bucket is private, we cannot use simple public URLs. Instead, we must generate a **signed URL** for each file we want to access. A signed URL is a temporary, secure link that grants access to a specific file for a limited time.
 
-You can upload files from your React application using the Supabase client library.
+The frontend will need to call a new Edge Function to get this URL before it can display an audio or video file.
 
-### 5.2.1. File Upload Component
+### 5.2.1. Creating a `get-signed-url` Edge Function
 
-Here is an example of a React component that allows users to upload a file to Supabase Storage:
+It is a security best practice to generate signed URLs on the server-side, not in the client. We will create a dedicated Edge Function for this.
 
-```javascript
-// jsx/components/FileUpload.jsx
-import React, { useState } from 'react';
-import { supabase } from '../supabaseClient';
+```bash
+supabase functions new get-signed-url
+```
 
-export function FileUpload({ onUpload }) {
-  const [uploading, setUploading] = useState(false);
+Now, add the following code to `supabase/functions/get-signed-url/index.ts`:
+```typescript
+// supabase/functions/get-signed-url/index.ts
+import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-  const handleUpload = async (event) => {
-    try {
-      setUploading(true);
-
-      const file = event.target.files[0];
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const filePath = `${fileName}`;
-
-      let { error: uploadError } = await supabase.storage
-        .from('media_files')
-        .upload(filePath, file);
-
-      if (uploadError) {
-        throw uploadError;
-      }
-
-      onUpload(filePath);
-    } catch (error) {
-      alert(error.message);
-    } finally {
-      setUploading(false);
+serve(async (req) => {
+  try {
+    const { filePath } = await req.json();
+    if (!filePath) {
+      throw new Error("Missing 'filePath' in request body");
     }
-  };
 
-  return (
-    <div>
-      {uploading ? (
-        'Uploading...'
-      ) : (
-        <>
-          <label htmlFor="single">Upload a file</label>
-          <input
-            type="file"
-            id="single"
-            accept="audio/*,video/*"
-            onChange={handleUpload}
-            disabled={uploading}
-          />
-        </>
-      )}
-    </div>
-  );
-}
+    // Create a Supabase client with the user's JWT from the request Authorization header
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+    );
+
+    // The user's JWT will be used to check their permissions.
+    // Our RLS policies on storage will be checked here.
+    // The user must have SELECT permission on the requested file.
+    const { data, error } = await supabaseClient.storage
+      .from('story-media') // Our private bucket
+      .createSignedUrl(filePath, 3600); // URL is valid for 1 hour
+
+    if (error) throw error;
+
+    return new Response(JSON.stringify({ signedUrl: data.signedUrl }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      headers: { 'Content-Type': 'application/json' },
+      status: 400,
+    });
+  }
+});
 ```
 
-### 5.2.2. Handling Large Files
+### 5.2.2. Calling the Edge Function from the Frontend
 
-For large files, it's recommended to use the `upload` method with the `upsert` option set to `true`. This allows for resumable uploads. If an upload is interrupted, you can restart it from where it left off.
+In the `Story.jsx` component, you would fetch the signed URL before rendering the audio/video player.
 
 ```javascript
-await supabase.storage
-  .from('media_files')
-  .upload(filePath, file, {
-    cacheControl: '3600',
-    upsert: true, // Use upsert for resumable uploads
-  });
+// ... inside Story.jsx
+const [audioUrl, setAudioUrl] = useState(null);
+
+useEffect(() => {
+  if (story?.media?.audio) {
+    const fetchSignedUrl = async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke('get-signed-url', {
+          body: { filePath: story.media.audio },
+        });
+        if (error) throw error;
+        if (data?.signedUrl) {
+          setAudioUrl(data.signedUrl);
+        }
+      } catch (error) {
+        console.error("Error fetching signed URL for media:", error);
+      }
+    };
+    fetchSignedUrl();
+  }
+}, [story]);
+
+// ... in render logic, you would now use the state variable:
+// <audio src={audioUrl} />
 ```
 
-## 5.3. Downloading and Serving Files
+## 5.3. Access Control Policies for Private Storage
 
-### 5.3.1. Public URLs
+You can write granular access control policies for your storage buckets using SQL. These policies are critical for securing our private media.
 
-For files in a public bucket, you can get the public URL using the `getPublicUrl` method.
+### 5.3.1. Example Policies
+Here are the policies for our private `story-media` bucket.
 
-```javascript
-const { data } = supabase
-  .storage
-  .from('media_files')
-  .getPublicUrl('my-audio-file.wav');
-
-console.log(data.publicUrl);
-```
-
-This is the method we will use in the `getMediaFilePath` function in `Story.jsx`.
-
-### 5.3.2. Signed URLs (for Private Files)
-
-For files in a private bucket, you need to create a signed URL. A signed URL is a temporary URL that grants access to a specific file for a limited time.
-
-```javascript
-const { data, error } = await supabase
-  .storage
-  .from('private_media')
-  .createSignedUrl('my-private-video.mp4', 60); // URL is valid for 60 seconds
-
-if (error) {
-  console.error('Error creating signed URL:', error);
-} else {
-  console.log(data.signedUrl);
-}
-```
-
-## 5.4. Access Control Policies
-
-You can write granular access control policies for your storage buckets using SQL. These policies are similar to the Row Level Security policies for your database tables.
-
-### 5.4.1. Example Policies
-
-Here are some example policies for a `media_files` bucket:
-
-1.  **Allow public read access**:
-
+1.  **Allow verified members to view files**: This policy checks the `profiles` table, just like our database RLS policy.
     ```sql
-    CREATE POLICY "Public read access"
+    CREATE POLICY "Verified members can view media"
     ON storage.objects FOR SELECT
-    USING ( bucket_id = 'media_files' );
+    USING (
+      bucket_id = 'story-media' AND
+      EXISTS (
+        SELECT 1
+        FROM public.profiles
+        WHERE profiles.id = auth.uid() AND profiles.is_verified_member = true
+      )
+    );
     ```
 
-2.  **Allow authenticated users to upload files**:
-
+2.  **Allow authenticated users to upload files**: We'll assume any authenticated user can upload, but this could be restricted further to verified members or specific roles.
     ```sql
-    CREATE POLICY "Authenticated users can upload"
+    CREATE POLICY "Authenticated users can upload media"
     ON storage.objects FOR INSERT
     TO authenticated
-    WITH CHECK ( bucket_id = 'media_files' );
+    WITH CHECK ( bucket_id = 'story-media' );
     ```
 
-3.  **Allow users to manage their own files**: (This assumes you have a `user_id` column in the `objects` table metadata)
-
+3.  **Allow users to update/delete their own files**: The `owner` column in `storage.objects` is automatically populated with the `uid` of the user who uploaded the file.
     ```sql
-    -- Allow users to view their own files
-    CREATE POLICY "Users can view their own files"
-    ON storage.objects FOR SELECT
-    USING ( auth.uid() = (storage.foldername(name))[1]::uuid );
+    CREATE POLICY "Users can update their own media"
+    ON storage.objects FOR UPDATE
+    USING ( auth.uid() = owner );
 
-    -- Allow users to upload to their own folder
-    CREATE POLICY "Users can upload to their own folder"
-    ON storage.objects FOR INSERT
-    WITH CHECK ( auth.uid() = (storage.foldername(name))[1]::uuid );
+    CREATE POLICY "Users can delete their own media"
+    ON storage.objects FOR DELETE
+    USING ( auth.uid() = owner );
     ```
-    *(Note: This is a more advanced use case that requires structuring your storage bucket with folders named after user IDs.)*
 
-## 5.5. Migrating Existing Media
+## 5.4. Migrating Existing Media
 
-To migrate your existing media files from `data/media_files` to your Supabase Storage bucket, you can use a Node.js script.
+This enhanced script migrates files from `data/media_files` to your new private `story-media` bucket.
 
-### Migration Script
+### 5.4.1. Prerequisites
+1.  **Install dependencies**:
+    ```bash
+    npm install @supabase/supabase-js dotenv mime-types
+    ```
+2.  **Set up `.env` file**:
+    ```
+    SUPABASE_URL=YOUR_SUPABASE_URL
+    SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_KEY
+    ```
 
-This script will read all the files in the `data/media_files` directory and upload them to your `media_files` bucket in Supabase.
-
+### 5.4.2. The Enhanced Media Migration Script
+Create a file named `migrate-media.js` and add the following code:
 ```javascript
 // migrate-media.js
 require('dotenv').config();
@@ -190,10 +173,14 @@ const mime = require('mime-types');
 
 // --- Configuration ---
 const MEDIA_FILES_DIR = path.join(__dirname, '../data/media_files');
-const BUCKET_NAME = 'media_files';
+const BUCKET_NAME = 'story-media'; // Use the new private bucket name
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // ---------------------
+
+const isDryRun = process.argv.includes('--dry-run');
+
+const isDryRun = process.argv.includes('--dry-run');
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in your .env file.');
@@ -203,40 +190,69 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 async function migrateMedia() {
-  console.log('Starting media migration...');
+  console.log('--- Starting Media Migration ---');
+  if (isDryRun) {
+    console.log('*** RUNNING IN DRY-RUN MODE. NO DATA WILL BE WRITTEN TO STORAGE. ***');
+  }
 
   try {
     const mediaFiles = fs.readdirSync(MEDIA_FILES_DIR);
+    console.log(`\nFound ${mediaFiles.length} media files to migrate.`);
 
-    console.log(`Found ${mediaFiles.length} media files to migrate.`);
+    let successCount = 0;
+    let errorCount = 0;
 
     for (const file of mediaFiles) {
       const filePath = path.join(MEDIA_FILES_DIR, file);
-      const fileContent = fs.readFileSync(filePath);
-      const contentType = mime.lookup(filePath);
+      console.log(`\n[Processing]: ${file}`);
 
-      console.log(`Uploading ${file}...`);
+      try {
+        if (!isDryRun) {
+          const fileContent = fs.readFileSync(filePath);
+          const contentType = mime.lookup(filePath) || 'application/octet-stream';
 
-      const { error } = await supabase.storage
-        .from(BUCKET_NAME)
-        .upload(file, fileContent, {
-          contentType,
-          upsert: true,
-        });
+          const { error } = await supabase.storage
+            .from(BUCKET_NAME)
+            .upload(file, fileContent, {
+              contentType,
+              upsert: true, // Use upsert to avoid errors if the file already exists
+            });
 
-      if (error) {
-        console.error(`Error uploading ${file}:`, error.message);
-      } else {
-        console.log(`Successfully uploaded ${file}`);
+          if (error) {
+            throw error;
+          }
+          console.log(`  - SUCCESS: Uploaded to Supabase Storage.`);
+          successCount++;
+        } else {
+          console.log(`  - DRY RUN: Would upload ${file} to Supabase Storage.`);
+          successCount++;
+        }
+      } catch (err) {
+        console.error(`  - ERROR processing ${file}:`, err.message);
+        errorCount++;
       }
     }
 
-    console.log('Media migration complete.');
+    console.log('\n--- Media Migration Complete ---');
+    console.log(`Summary:`);
+    console.log(`  - Successful/Would Upload: ${successCount}`);
+    console.log(`  - Errored:    ${errorCount}`);
+    console.log('------------------------------');
+
   } catch (error) {
-    console.error('An unexpected error occurred during migration:', error);
+    console.error('\nAn unexpected error occurred during migration:', error);
   }
 }
 
 migrateMedia();
 ```
-*(Note: This script requires the `mime-types` package. You can install it with `npm install mime-types`.)*
+
+### 5.5.3. How to Run the Script
+1.  **Run a dry run (recommended)**:
+    ```bash
+    node migrate-media.js --dry-run
+    ```
+2.  **Run the actual migration**:
+    ```bash
+    node migrate-media.js
+    ```

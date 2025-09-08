@@ -1,75 +1,73 @@
 # 2. Project Setup and Pricing
 
-This document provides a detailed guide to setting up your Supabase project and understanding the pricing model.
+This document provides a detailed guide to setting up your Supabase project and understanding the pricing model, with cost estimations based on the project's actual data.
 
-## 2.1. Supabase Pricing: A Deeper Dive
+## 2.1. Supabase Pricing: A Data-Driven Analysis
 
-Supabase uses a usage-based pricing model, which means you only pay for what you use. There are three main tiers: Free, Pro, and Enterprise. For most projects, the **Free** and **Pro** tiers are the most relevant.
+Supabase uses a usage-based pricing model. To provide a realistic cost estimate, we will first analyze the current dataset and then project costs for future growth.
 
-### 2.1.1. Pricing Tiers
+### 2.1.1. Analysis of Current Data
 
-*   **Free Tier**: This tier is perfect for getting started, for personal projects, and for development environments. It has generous limits, but also some important restrictions (e.g., projects are paused after 1 week of inactivity).
-*   **Pro Tier**: This tier is designed for production applications. It starts at **$25/month** and includes a base amount of usage for each service. If you exceed the included usage, you pay for the additional resources you consume.
+First, let's analyze the size of the existing data in the repository.
 
-### 2.1.2. Service-Specific Pricing (Pay-as-you-go)
+*   **Number of Stories**: There are currently **5** stories in the `data/elan_files` directory.
+*   **Media Storage Size**: The total size of the `.wav` files in `data/media_files` is **~243 MB**.
+*   **Database Size**: The total size of the raw `.eaf` files is **~1.5 MB**. When converted to JSON and stored in a Postgres database with indexes, the size will be larger. A conservative estimate would be around **15-20 MB** for the current dataset.
 
-Here's a breakdown of the pricing for each of Supabase's core services, focusing on the pay-as-you-go model of the Pro tier:
+### 2.1.2. Cost Projections Based on Real Data
 
-| Service           | Included in Pro Plan     | Price for additional usage                    |
-| ----------------- | ------------------------ | --------------------------------------------- |
-| **Database**      | 8 GB                     | $0.125 per GB per day                         |
-| **Auth**          | 100,000 MAUs             | $0.00325 per additional MAU                   |
-| **Storage**       | 100 GB                   | $0.021 per GB per month                       |
-| **Bandwidth**     | 50 GB                    | $0.09 per GB                                  |
-| **Edge Functions**| 2,000,000 invocations    | $2 per million invocations                    |
+We will base our projections on the Supabase **Pro Plan**, which costs **$25/month** and includes a base amount of resources. We will calculate the additional costs for usage beyond what's included.
 
-### 2.1.3. Cost Projection Scenarios
+**Scenario 1: Current Size (5 Stories)**
 
-To give you a better idea of potential costs, here are a few hypothetical scenarios for the LingView application:
+*   **Database**: ~20 MB (well within the included 8 GB) -> $0
+*   **Storage**: 243 MB (well within the included 100 GB) -> $0
+*   **Bandwidth & Functions**: Assuming low traffic, these will be within the included limits. -> $0
+*   **Estimated Monthly Cost**: **$25** (the base price of the Pro plan)
 
-**Scenario 1: Small Project (Development / Early Production)**
+**Scenario 2: 2x Growth (10 Stories)**
 
-*   **Database**: < 8 GB (included)
-*   **Auth**: < 10,000 MAUs (included)
-*   **Storage**: 10 GB (covered by Pro plan)
-*   **Bandwidth**: < 50 GB (included)
-*   **Edge Functions**: < 2,000,000 invocations (included)
-*   **Estimated Monthly Cost**: **$25** (the base price for the Pro plan)
+*   **Database**: ~40 MB -> $0 (included)
+*   **Storage**: ~486 MB -> $0 (included)
+*   **Estimated Monthly Cost**: **$25**
 
-**Scenario 2: Medium Project**
+**Scenario 3: 10x Growth (50 Stories)**
 
-*   **Database**: 10 GB (2 GB overage) -> ~$7.50/month
-*   **Auth**: 120,000 MAUs (20,000 overage) -> $65
-*   **Storage**: 150 GB (50 GB overage) -> $1.05
-*   **Bandwidth**: 100 GB (50 GB overage) -> $4.50
-*   **Edge Functions**: 5,000,000 invocations (3,000,000 overage) -> $6
-*   **Estimated Monthly Cost**: $25 (base) + $7.50 + $65 + $1.05 + $4.50 + $6 = **$109.05**
+*   **Database**: ~200 MB -> $0 (included)
+*   **Storage**: ~2.43 GB -> $0 (included)
+*   **Estimated Monthly Cost**: **$25**
 
-**Scenario 3: Large Project**
+**Scenario 4: 100x Growth (500 Stories)**
 
-*   **Database**: 20 GB (12 GB overage) -> ~$45/month
-*   **Auth**: 500,000 MAUs (400,000 overage) -> $1300
-*   **Storage**: 500 GB (400 GB overage) -> $8.40
-*   **Bandwidth**: 500 GB (450 GB overage) -> $40.50
-*   **Edge Functions**: 20,000,000 invocations (18,000,000 overage) -> $36
-*   **Estimated Monthly Cost**: $25 (base) + $45 + $1300 + $8.40 + $40.50 + $36 = **$1454.90**
+*   **Database**: ~2 GB -> $0 (included)
+*   **Storage**: ~24.3 GB -> $0 (included)
+*   **Estimated Monthly Cost**: **$25**
 
-**Note**: These are just estimates. Your actual costs will vary depending on your usage. It's important to monitor your usage in the Supabase dashboard.
+**Scenario 5: 1,000x Growth (5,000 Stories)**
+
+*   **Database**: ~20 GB (12 GB overage)
+    *   Cost: 12 GB * $0.125/GB-day * 30 days = **$45/month**
+*   **Storage**: ~243 GB (143 GB overage)
+    *   Cost: 143 GB * $0.021/GB-month = **$3/month**
+*   **Bandwidth (Egress)**: This is the hardest to predict, as it depends on usage. Let's assume each story is fully listened to once per month.
+    *   Total egress: 243 GB
+    *   Included: 50 GB
+    *   Overage: 193 GB
+    *   Cost: 193 GB * $0.09/GB = **$17.37/month**
+*   **Estimated Monthly Cost**: $25 (base) + $45 (db) + $3 (storage) + $17.37 (bandwidth) = **~$90.37**
+
+**Conclusion**: The Supabase Pro plan is extremely cost-effective for this project's needs. Significant growth to thousands of stories is required before the monthly cost begins to increase beyond the base $25 fee. The primary cost driver at scale will be the database size and bandwidth, not storage.
 
 ## 2.2. Setting Up Your Supabase Project
-
-This section will walk you through the process of creating a new Supabase project.
 
 *(Note: As a text-based assistant, I cannot provide screenshots. The following steps are described in detail. You can also refer to the official Supabase documentation for visual guides.)*
 
 ### Step 1: Create a Supabase Account
-
 1.  Go to [supabase.com](https://supabase.com).
 2.  Click on "Start your project".
 3.  Sign up with your preferred method (GitHub, Google, or email).
 
 ### Step 2: Create a New Project
-
 1.  Once you are logged in, you will be taken to your dashboard.
 2.  Click on the "New project" button.
 3.  You will be asked to choose an organization. If you don't have one, you can create one.
@@ -83,9 +81,7 @@ This section will walk you through the process of creating a new Supabase projec
 Supabase will now provision your project. This may take a few minutes.
 
 ### Step 3: Get Your API Keys
-
 Once your project is ready, you will need to get your API keys. These keys are used to connect your application to your Supabase backend.
-
 1.  In the Supabase dashboard, navigate to your project.
 2.  In the left sidebar, click on the "Settings" icon (a gear).
 3.  In the settings menu, click on "API".
@@ -98,14 +94,11 @@ Once your project is ready, you will need to get your API keys. These keys are u
 It is crucial that you **do not** hardcode your Supabase URL and `anon` key directly in your source code. This is a security risk. Instead, you should use environment variables.
 
 ### Setting up `.env` for React
-
 1.  Create a file named `.env` in the root of your React project.
 2.  Add your Supabase URL and `anon` key to this file, prefixed with `REACT_APP_`:
-
     ```
     REACT_APP_SUPABASE_URL=YOUR_SUPABASE_URL
     REACT_APP_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
     ```
-
 3.  Make sure to add `.env` to your `.gitignore` file to prevent it from being committed to your repository.
 4.  You can now access these variables in your code using `process.env.REACT_APP_SUPABASE_URL` and `process.env.REACT_APP_SUPABASE_ANON_KEY`.

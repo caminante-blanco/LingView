@@ -319,9 +319,9 @@ export class Story extends React.Component {
 // ... (helper functions)
 ```
 
-### 7.4.2. After Migration
+### 7.4.2. After Migration (with Private Media)
 
-We'll refactor this to be a functional component that fetches the specific story data from Supabase based on the `storyID` prop.
+We'll refactor this to be a functional component that fetches the specific story data from Supabase and then fetches a signed URL for the private media.
 
 ```javascript
 // jsx/App/Stories/Story/Story.jsx (After)
@@ -336,6 +336,7 @@ import { NotFound } from '../NotFound.jsx';
 
 export function Story({ storyID }) {
     const [story, setStory] = useState(null);
+    const [mediaUrl, setMediaUrl] = useState(null); // State for the signed URL
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
@@ -344,6 +345,7 @@ export function Story({ storyID }) {
             try {
                 setLoading(true);
                 setError(null);
+                setMediaUrl(null);
 
                 const { data, error } = await supabase
                     .from('stories')
@@ -352,12 +354,13 @@ export function Story({ storyID }) {
                     .single();
 
                 if (error) {
-                    throw error;
+                    // This will also catch RLS errors if the user is not verified
+                    throw new Error('Story not found or you do not have permission to view it.');
                 }
                 if (data) {
                     setStory(data);
                 } else {
-                    setError('Story not found.');
+                    throw new Error('Story not found.');
                 }
             } catch (err) {
                 setError(err.message);
@@ -372,6 +375,30 @@ export function Story({ storyID }) {
         }
     }, [storyID]);
 
+    // New effect to fetch the signed URL for the media
+    useEffect(() => {
+        if (story?.media?.audio) {
+            const fetchSignedUrl = async () => {
+                try {
+                    const { data, error } = await supabase.functions.invoke('get-signed-url', {
+                        body: { filePath: story.media.audio },
+                    });
+                    if (error) throw error;
+                    if (data?.signedUrl) {
+                        setMediaUrl(data.signedUrl);
+                    }
+                } catch (err) {
+                    console.error("Error fetching signed URL for media:", err);
+                    setError("Could not load story media.");
+                }
+            };
+            fetchSignedUrl();
+        } else if (story?.media?.video) {
+            // Similar logic for video files
+        }
+    }, [story]);
+
+
     useEffect(() => {
         if (story) {
             setupYoutubeAndTextSync();
@@ -384,14 +411,21 @@ export function Story({ storyID }) {
     }, [story]);
 
     if (loading) return <Loader />;
-    if (error) return <NotFound />; // Or a specific error component
+    if (error) return <div><p>Error: {error}</p><NotFound /></div>;
+    if (!story) return <NotFound />;
 
     const { sentences, metadata } = story;
     const timed = metadata.timed;
     let footer = null;
 
-    // ... (rest of the render logic remains the same, but needs to be adapted
-    // to the functional component structure and use the `story` state variable)
+    if (timed && mediaUrl) { // Only render the footer if we have a mediaUrl
+        const media = story.metadata.media;
+        if (media.audio) {
+            footer = <div id="footer"><audio data-live="true" controls controlsList="nodownload" id="audio" src={mediaUrl}/></div>;
+        } else {
+           // ... logic for video
+        }
+    }
 
     return (
         <div>
@@ -403,16 +437,12 @@ export function Story({ storyID }) {
         </div>
     );
 }
-
-// ... (helper functions can remain, but getMediaFilePath should be updated
-//      to use Supabase Storage as described in Document 5)
 ```
 
 ### 7.4.3. Explanation of Changes
 
-*   **Functional Component & Hooks**: We've converted the component to a functional component and are using `useState` and `useEffect`.
-*   **Data Fetching**: The main `useEffect` hook now depends on the `storyID` prop. When the `storyID` changes, it fetches the corresponding story from the `stories` table in Supabase.
-*   **`.single()`**: We use the `.single()` method from the Supabase client to ensure that we get a single record back. If no record or multiple records are found, it will return an error, which we catch.
-*   **Error and Loading States**: We've added proper `loading` and `error` states to provide better feedback to the user. If a story is not found, we can render the `NotFound` component.
-*   **Side Effects**: The logic that depended on the DOM (`setupYoutubeAndTextSync`, `Video.show/hide`) has been moved into a separate `useEffect` hook that runs only when the `story` data has been successfully loaded.
-*   **Render Logic**: The render logic remains largely the same but needs to be adapted to the functional component structure (i.e., it's no longer inside a `render()` method and uses the `story` state variable). The `getMediaFilePath` helper function should also be updated as detailed in the Media Storage guide.
+*   **State Management**: We add a new state variable, `mediaUrl`, to hold the temporary signed URL for the private media file.
+*   **Signed URL Fetching**: A new `useEffect` hook is added. This hook runs after the story data has been loaded. It calls the `get-signed-url` Edge Function we created, passing the file path from the story's media object. The returned signed URL is then stored in the `mediaUrl` state.
+*   **Conditional Rendering**: The audio/video player in the `footer` is now only rendered once the `mediaUrl` has been successfully fetched. This prevents the browser from trying to access a null or invalid URL.
+*   **Error Handling**: The `fetchSignedUrl` function includes error handling in case the Edge Function fails or the user does not have permission to access the file.
+*   **Removed `getMediaFilePath`**: The old helper function is no longer needed, as the URL is now fetched dynamically and is not based on a static file path.

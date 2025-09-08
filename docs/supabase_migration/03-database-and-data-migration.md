@@ -6,7 +6,7 @@ This document provides a comprehensive guide to designing the database schema an
 
 The core of our new backend will be a single table named `stories`. This table will hold all the information for each story, consolidating the data from both `index.json` and the individual story JSON files.
 
-### 3.1.1. The `stories` Table
+### 3.1.1. The `stories` Table SQL
 
 Here is the SQL statement to create the `stories` table. You can run this in the Supabase SQL Editor.
 
@@ -14,60 +14,78 @@ Here is the SQL statement to create the `stories` table. You can run this in the
 CREATE TABLE public.stories (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   story_id text NOT NULL,
-  title jsonb NULL,
   author text NULL,
   timed boolean NOT NULL DEFAULT false,
+  title jsonb NULL,
   media jsonb NULL,
   sentences jsonb NULL,
   metadata jsonb NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  user_id uuid NULL REFERENCES auth.users(id) ON DELETE SET NULL,
   CONSTRAINT stories_pkey PRIMARY KEY (id),
   CONSTRAINT stories_story_id_key UNIQUE (story_id)
 );
 ```
 
-### 3.1.2. Column Breakdown
+### 3.1.2. Column Breakdown and Rationale
 
-Here is a detailed explanation of each column in the `stories` table:
+Here is a detailed explanation of each column in the `stories` table and the rationale behind the chosen data types.
 
-| Column      | Data Type       | Description                                                                                             |
-|-------------|-----------------|---------------------------------------------------------------------------------------------------------|
-| `id`        | `uuid`          | A unique identifier for each row in the table. This is the primary key.                                   |
-| `story_id`  | `text`          | The human-readable story ID from the original file names (e.g., "DES_2014_DAS_coletor_de_sauvas_noturnas"). This column is unique. |
-| `title`     | `jsonb`         | A JSON object containing the different versions of the story's title.                                     |
-| `author`    | `text`          | The author of the story.                                                                                  |
-| `timed`     | `boolean`       | A boolean flag indicating whether the story has timed media.                                              |
-| `media`     | `jsonb`         | A JSON object containing information about the media files associated with the story (e.g., `audio`, `video`). |
-| `sentences` | `jsonb`         | A JSON array containing the sentences of the story. This is the main content of the story.                |
-| `metadata`  | `jsonb`         | A JSON object containing all other metadata associated with the story.                                    |
-| `created_at`| `timestamptz`   | A timestamp indicating when the row was created.                                                          |
+| Column      | Data Type       | Description & Rationale                                                                                             |
+|-------------|-----------------|---------------------------------------------------------------------------------------------------------------------|
+| `id`        | `uuid`          | A unique identifier for each row. A `uuid` is a robust choice for a primary key, especially in distributed systems. |
+| `story_id`  | `text`          | The human-readable story ID from the original file names. Using `text` is appropriate for variable-length identifiers. It is indexed for fast lookups. |
+| `author`    | `text`          | The author of the story.                                                                                            |
+| `timed`     | `boolean`       | A boolean flag indicating whether the story has timed media. `boolean` is the most efficient type for true/false values. |
+| `title`     | `jsonb`         | A JSON object for the story's title. `jsonb` is used over `json` because it stores data in a decomposed binary format, which is faster to process and can be indexed. This is ideal for structured JSON data. |
+| `media`     | `jsonb`         | A JSON object for media file information. `jsonb` is chosen for the same reasons as `title`.                          |
+| `sentences` | `jsonb`         | A JSON array containing the story's sentences. `jsonb` efficiently handles arrays of objects.                         |
+| `metadata`  | `jsonb`         | A JSON object for all other metadata. This acts as a flexible "catch-all" for any other data from the original files. |
+| `created_at`| `timestamptz`   | A timestamp indicating when the row was created. `timestamptz` (timestamp with time zone) is the standard for storing time data. |
+| `user_id`   | `uuid`          | A foreign key referencing the `auth.users` table, linking a story to a user. `ON DELETE SET NULL` means if a user is deleted, their stories are kept but no longer associated with them. |
 
-We use the `jsonb` data type for columns that contain nested data structures. This allows us to store the original JSON data directly in the database while still being able to query it efficiently.
+
+### 3.1.3. Database Indexing for Performance
+
+Indexes are crucial for making database queries fast. Without them, the database would have to scan the entire table for every lookup. We will create indexes on the columns that will be frequently used in `WHERE` clauses.
+
+Run the following SQL commands in the Supabase SQL Editor to create the indexes:
+
+```sql
+-- Create an index on the story_id column for fast lookups of specific stories.
+-- This is already created automatically because of the UNIQUE constraint, but we list it for clarity.
+-- CREATE UNIQUE INDEX stories_story_id_key ON public.stories (story_id);
+
+-- Create an index on the user_id column to quickly find all stories by a specific user.
+CREATE INDEX stories_user_id_idx ON public.stories (user_id);
+
+-- Create an index on the author column to quickly find all stories by a specific author.
+CREATE INDEX stories_author_idx ON public.stories (author);
+
+-- If you plan to query data inside the JSONB columns, you can create a GIN index.
+-- For example, to quickly find stories that have an audio file:
+CREATE INDEX stories_media_audio_idx ON public.stories USING GIN ((media -> 'audio'));
+```
 
 ## 3.2. Data Migration
 
-Now that we have our database schema, we need to migrate the data from the existing JSON files into the new `stories` table. We will use a Node.js script for this.
+We will use an enhanced Node.js script to migrate the data. This script will include a "dry run" mode and more verbose logging.
 
 ### 3.2.1. Prerequisites
 
-Before you can run the migration script, you need to:
-
-1.  **Install dependencies**: The script requires the `@supabase/supabase-js` and `dotenv` packages. You can install them with npm:
-
+1.  **Install dependencies**:
     ```bash
     npm install @supabase/supabase-js dotenv
     ```
-
-2.  **Set up environment variables**: The script needs your Supabase URL and `service_role` key to connect to your database. Create a `.env` file in the same directory as the script and add the following:
-
+2.  **Set up environment variables**: Create a `.env` file in the same directory as the script:
     ```
     SUPABASE_URL=YOUR_SUPABASE_URL
     SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_KEY
     ```
 
-    You can find your `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in your Supabase project's API settings. **Important**: The `service_role` key has full access to your database, so keep it secret and do not expose it in the frontend application.
+### 3.2.2. The Enhanced Migration Script
 
-### 3.2.2. The Migration Script
+This script includes a `--dry-run` flag to simulate the migration without actually writing to the database.
 
 Create a file named `migrate-data.js` and add the following code:
 
@@ -84,6 +102,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // ---------------------
 
+const isDryRun = process.argv.includes('--dry-run');
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in your .env file.');
   process.exit(1);
@@ -92,56 +112,79 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 async function migrateData() {
-  console.log('Starting data migration...');
+  console.log('--- Starting Data Migration ---');
+  if (isDryRun) {
+    console.log('*** RUNNING IN DRY-RUN MODE. NO DATA WILL BE WRITTEN TO THE DATABASE. ***');
+  }
 
   try {
     const jsonFiles = fs.readdirSync(JSON_FILES_DIR).filter(file => file.endsWith('.json'));
 
     if (jsonFiles.length === 0) {
-      console.log('No JSON files found in the specified directory. Make sure to run the preprocessing script first.');
+      console.log('\nWarning: No JSON files found in the specified directory.');
+      console.log('Please run `npm run quick-build` to generate them first.');
       return;
     }
 
-    console.log(`Found ${jsonFiles.length} JSON files to migrate.`);
+    console.log(`\nFound ${jsonFiles.length} JSON files to migrate.`);
+
+    let successCount = 0;
+    let errorCount = 0;
 
     for (const file of jsonFiles) {
       const filePath = path.join(JSON_FILES_DIR, file);
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      const storyData = JSON.parse(fileContent);
+      console.log(`\n[Processing]: ${file}`);
 
-      const story_id = file.replace('.json', '');
+      try {
+        const fileContent = fs.readFileSync(filePath, 'utf8');
+        const storyData = JSON.parse(fileContent);
 
-      // Extract data based on the actual structure of the JSON files
-      const { sentences, metadata } = storyData;
-      const { title, author, timed, media } = metadata;
+        const story_id = file.replace('.json', '');
 
-      console.log(`Migrating story: ${story_id}`);
+        const { sentences, metadata } = storyData;
+        const { title, author, timed, media } = metadata;
 
-      const { data, error } = await supabase
-        .from('stories')
-        .upsert(
-          {
-            story_id,
-            title,
-            author,
-            timed,
-            media,
-            sentences,
-            metadata,
-          },
-          { onConflict: 'story_id' }
-        );
+        const payload = {
+          story_id,
+          title,
+          author,
+          timed,
+          media,
+          sentences,
+          metadata,
+        };
 
-      if (error) {
-        console.error(`Error migrating story ${story_id}:`, error.message);
-      } else {
-        console.log(`Successfully migrated story: ${story_id}`);
+        console.log(`  - Story ID: ${story_id}`);
+        console.log(`  - Author: ${author}`);
+
+        if (!isDryRun) {
+          const { error } = await supabase
+            .from('stories')
+            .upsert(payload, { onConflict: 'story_id' });
+
+          if (error) {
+            throw error;
+          }
+          console.log(`  - SUCCESS: Upserted to Supabase.`);
+          successCount++;
+        } else {
+          console.log(`  - DRY RUN: Would upsert data to Supabase.`);
+          successCount++;
+        }
+      } catch (err) {
+        console.error(`  - ERROR processing ${file}:`, err.message);
+        errorCount++;
       }
     }
 
-    console.log('Data migration complete.');
+    console.log('\n--- Data Migration Complete ---');
+    console.log(`Summary:`);
+    console.log(`  - Successful: ${successCount}`);
+    console.log(`  - Errored:    ${errorCount}`);
+    console.log('-----------------------------');
+
   } catch (error) {
-    console.error('An unexpected error occurred during migration:', error);
+    console.error('\nAn unexpected error occurred during migration:', error);
   }
 }
 
@@ -150,20 +193,19 @@ migrateData();
 
 ### 3.2.3. How to Run the Script
 
-1.  **Generate the JSON files**: The migration script reads from the `data/json_files` directory. This directory is empty by default. You need to run the existing preprocessing script first to generate the JSON files:
-
+1.  **Generate JSON files**:
     ```bash
     npm run quick-build
     ```
-
-2.  **Run the migration script**: Once the JSON files are generated, you can run the migration script:
-
+2.  **Run a dry run (recommended)**:
+    ```bash
+    node migrate-data.js --dry-run
+    ```
+    This will simulate the entire process and log the actions without writing anything to your database.
+3.  **Run the actual migration**:
     ```bash
     node migrate-data.js
     ```
 
-The script will log its progress to the console.
-
 ### 3.2.4. Verifying the Migration
-
 After the script has finished, you can verify that the data has been migrated correctly by going to the Supabase dashboard and viewing the `stories` table in the Table Editor. You should see all of your stories listed there.

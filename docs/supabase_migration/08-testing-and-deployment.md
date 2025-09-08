@@ -6,13 +6,19 @@ This is the final document in our Supabase migration guide. In this section, we 
 
 Thorough testing is crucial to ensure that the application is working correctly and that the migration has not introduced any regressions.
 
-### 8.1.1. Unit Tests
+### 8.1.1. Unit Tests with React Testing Library
 
-Unit tests focus on testing individual components in isolation. We recommend using [React Testing Library](https://testing-library.com/docs/react-testing-library/intro/) for this.
+Unit tests focus on testing individual components in isolation. We recommend using [React Testing Library](https://testing-library.com/docs/react-testing-library/intro/) and [Jest](https://jestjs.io/).
+
+**Setup:**
+If not already configured, you'll need to install these packages:
+```bash
+npm install --save-dev jest @testing-library/react @testing-library/jest-dom
+```
+And configure Jest in your `package.json` or a `jest.config.js` file.
 
 **Example Unit Test for `StoryIndex.jsx`:**
-
-First, you would need to set up your testing environment (e.g., with Jest and React Testing Library). Then, you would write a test like this:
+This test mocks the Supabase client to provide controlled data and then checks if the component renders the stories correctly.
 
 ```javascript
 // jsx/App/StoryIndex.test.jsx
@@ -29,50 +35,67 @@ jest.mock('../supabaseClient', () => ({
   },
 }));
 
-test('renders a list of stories', async () => {
+test('renders a list of stories after loading', async () => {
   const mockStories = [
     { story_id: 'story1', title: { _default: 'Story 1' }, author: 'Author 1', timed: true, media: { audio: 'a.wav' } },
     { story_id: 'story2', title: { _default: 'Story 2' }, author: 'Author 2', timed: false, media: {} },
   ];
+  // Mock the resolved value of the select query
   supabase.from('stories').select.mockResolvedValueOnce({ data: mockStories, error: null });
 
   render(<StoryIndex />);
 
+  // Check for loading state first
   expect(screen.getByText(/Loading stories.../i)).toBeInTheDocument();
 
+  // Wait for the component to re-render with the fetched data
   await waitFor(() => {
+    // The link text will be the title, so we search for that
     expect(screen.getByText('Story 1')).toBeInTheDocument();
-    expect(screen.getByText('Story 2')).toBeInTheDocument();
+    expect(screen.getByText('Author 1')).toBeInTheDocument();
   });
+
+  // Ensure loading text is gone
+  expect(screen.queryByText(/Loading stories.../i)).not.toBeInTheDocument();
 });
 ```
-This test mocks the Supabase client to provide controlled data and then checks if the component renders the stories correctly.
 
-### 8.1.2. End-to-End (E2E) Tests
+### 8.1.2. End-to-End (E2E) Tests with Cypress
 
-E2E tests simulate real user workflows from start to finish. We recommend using a tool like [Cypress](https://www.cypress.io/) or [Playwright](https://playwright.dev/) for this.
+E2E tests simulate real user workflows. We recommend using a tool like [Cypress](https://www.cypress.io/).
 
-**Conceptual E2E Test with Cypress:**
+**Setup:**
+```bash
+npm install --save-dev cypress
+npx cypress open
+```
+This will set up the necessary files and folders for Cypress.
 
+**Conceptual E2E Test:**
 ```javascript
 // cypress/integration/main_flow.spec.js
 describe('Main application flow', () => {
-  it('allows a user to log in and view a story', () => {
-    // Visit the login page
-    cy.visit('/#/login');
+  it('redirects unauthenticated users and allows verified users to see stories', () => {
+    // Mock the profiles table response for a non-verified user
+    cy.intercept('GET', '**/rest/v1/stories*', {
+      statusCode: 200,
+      body: [], // RLS returns an empty array for non-verified users
+    }).as('getStories');
 
-    // Enter credentials and log in
-    cy.get('input[type="email"]').type('test@example.com');
-    cy.get('input[type="password"]').type('password123');
-    cy.get('button[type="submit"]').click();
+    cy.visit('/');
+    cy.wait('@getStories');
 
-    // Wait for the main page to load and click on a story
-    cy.contains('Story Index').should('be.visible');
-    cy.contains('My Test Story').click();
+    // Should not see story content
+    cy.contains('Story 1').should('not.exist');
 
-    // Verify that the story content is displayed
-    cy.url().should('include', '/story/my-test-story');
-    cy.contains('This is the content of my test story.').should('be.visible');
+    // Use cy.task to log in as a verified user (requires setup in cypress/plugins/index.js)
+    cy.task('supabaseLogin', { user: 'verified_user' });
+
+    // Re-visit the page
+    cy.visit('/');
+
+    // Now the user should see the stories
+    cy.contains('Story 1').should('be.visible');
   });
 });
 ```
@@ -80,43 +103,52 @@ describe('Main application flow', () => {
 ### 8.1.3. Testing Edge Functions
 
 You can test your Edge Functions locally using the Supabase CLI.
-
-1.  **Start the local development server**:
-
-    ```bash
-    supabase start
-    ```
-
-2.  **Invoke the function**: You can use a tool like `curl` to send a POST request to your local Edge Function, simulating a webhook trigger.
-
+1.  **Start the local dev server**: `supabase start`
+2.  **Invoke the function**: Use `curl` to send a POST request with a sample payload to your local function's URL.
     ```bash
     curl -X POST 'http://localhost:54321/functions/v1/process-story-file' \
     -H 'Content-Type: application/json' \
     -d '{"type":"INSERT","table":"objects","record":{"id":"...","bucket_id":"elan_files","name":"my-test-file.eaf"}}'
     ```
-
-3.  **Check the logs**: The output of the `supabase start` command will show the logs from your Edge Function, allowing you to debug it.
+3.  **Check the logs**: The output of `supabase start` will show the logs from your function, including any errors.
 
 ## 8.2. Deployment Guide
 
-We recommend deploying the LingView application to a modern hosting provider like [Vercel](https://vercel.com) or [Netlify](https://www.netlify.com), as they offer seamless integration with Git and Supabase.
+### 8.2.1. Managing Environments
 
-### Step-by-Step Deployment to Vercel
+A best practice is to have separate environments for development, staging, and production.
+*   **Development**: Your local machine, connected to a local Supabase instance (`supabase start`).
+*   **Staging**: A preview environment that mirrors production. You can create a new Supabase project for staging. Use a `staging` branch in Git, and your hosting provider can build preview deployments from this branch.
+*   **Production**: The live application. Your `main` branch in Git.
 
-1.  **Push your code to a Git provider**: Make sure your project is on GitHub, GitLab, or Bitbucket.
-2.  **Sign up for Vercel**: Create an account on Vercel, preferably using your Git provider account.
-3.  **Import your project**: In the Vercel dashboard, click on "Add New..." -> "Project". Find your Git repository and click "Import".
-4.  **Configure the project**:
-    *   Vercel will automatically detect that you are using a React application and configure the build settings correctly.
-    *   The most important step is to add your Supabase environment variables. Go to the "Settings" tab of your new project, then click on "Environment Variables".
-    *   Add the following variables:
+Both Supabase and hosting providers like Vercel/Netlify support multiple environments. You can manage different sets of environment variables for each.
+
+### 8.2.2. Step-by-Step Deployment to Vercel
+
+1.  **Push your code to a Git provider** (GitHub, GitLab, etc.).
+2.  **Sign up for Vercel** and import your Git repository.
+3.  **Configure the project**:
+    *   Vercel will likely detect the correct framework preset (`Create React App`).
+    *   Go to the "Settings" -> "Environment Variables" tab.
+    *   Add your **production** Supabase keys:
         *   `REACT_APP_SUPABASE_URL`: Your Supabase project URL.
         *   `REACT_APP_SUPABASE_ANON_KEY`: Your Supabase project `anon` key.
-5.  **Deploy**: Click the "Deploy" button. Vercel will now build and deploy your application.
+4.  **Deploy**: Click the "Deploy" button. Vercel will build and deploy your main branch.
 
-### Continuous Deployment
+### 8.2.3. Step-by-Step Deployment to Netlify
 
-Once your project is deployed, Vercel will automatically set up a continuous deployment pipeline. Every time you push a new commit to your main branch, Vercel will automatically rebuild and redeploy your application with the latest changes.
+The process is very similar for Netlify.
+1.  **Push your code to a Git provider**.
+2.  **Sign up for Netlify** and link your Git provider account.
+3.  Click "New site from Git" and choose your repository.
+4.  **Configure the build**:
+    *   Netlify should detect your settings. Ensure the "Build command" is `npm run build` (or your project's build script) and the "Publish directory" is `build` (or your project's output directory).
+    *   Go to "Site settings" -> "Build & deploy" -> "Environment".
+    *   Add your production environment variables (`REACT_APP_SUPABASE_URL`, `REACT_APP_SUPABASE_ANON_KEY`).
+5.  **Deploy**: Trigger a deploy.
+
+### 8.2.4. Continuous Deployment
+Both Vercel and Netlify will automatically set up a continuous deployment pipeline. Every time you push a new commit to your main branch, they will automatically rebuild and redeploy your application with the latest changes.
 
 ## 8.3. Conclusion
 

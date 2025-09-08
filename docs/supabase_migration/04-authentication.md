@@ -1,132 +1,160 @@
 # 4. Advanced Authentication
 
-This document provides a deep dive into implementing user authentication in the LingView application using Supabase Auth. We will cover everything from the basic setup to advanced topics like social logins and Row Level Security.
+This document provides a deep dive into implementing user authentication in the LingView application using Supabase Auth. We will cover everything from the basic setup to advanced topics like social logins, a complete implementation of a React Auth Context, and role-based Row Level Security.
 
 ## 4.1. Basic Setup with the Auth UI
 
-As mentioned in the previous documents, the easiest way to get started with Supabase Auth in a React application is by using the `@supabase/auth-ui-react` library.
+As a starting point, the `@supabase/auth-ui-react` library provides the fastest way to build a login form.
 
 ### 4.1.1. Installation
-
 ```bash
 npm install @supabase/supabase-js @supabase/auth-ui-react
 ```
 
-### 4.1.2. Basic Implementation
+### 4.1.2. Basic Login Component
+While you can put the Auth UI directly in `App.jsx`, a better practice is to encapsulate it in its own component.
 
-Here is a basic implementation of the Auth UI in your `App.jsx` component. This will render a login form if the user is not authenticated, and the main application if they are.
-
+Create `jsx/App/Login.jsx`:
 ```javascript
-// jsx/App/App.jsx
-import React, { useState, useEffect } from 'react';
+// jsx/App/Login.jsx
+import React from 'react';
 import { Auth } from '@supabase/auth-ui-react';
 import { ThemeSupa } from '@supabase/auth-ui-react-shared';
-import { supabase } from './supabaseClient'; // Make sure you have created this file
-import { Header } from './Header.jsx';
-import { LocaleProvider } from './locale/LocaleContext.jsx'
-import { LocaleSelect } from './locale/LocaleSelect.jsx'
-import { TranslatableText } from "./locale/TranslatableText.jsx";
-import { footerText } from "./locale/LocaleConstants.jsx";
+import { supabase } from '../supabaseClient';
 
-
-export function App() {
-  const [session, setSession] = useState(null);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  if (!session) {
-    return (
-      <div className="auth-container">
-        <Auth supabaseClient={supabase} appearance={{ theme: ThemeSupa }} />
-      </div>
-    );
-  } else {
-    return (
-        <LocaleProvider>
-            <Header />
-            <footer>
-              <small>
-                <TranslatableText dictionary={footerText} />
-                <span><a href='https://github.com/BrownCLPS/LingView/' target="_blank" rel="noopener noreferrer">Lingview</a> © 2022</span>
-              </small>
-              <LocaleSelect />
-            </footer>
-        </LocaleProvider>
-    );
-  }
+export function Login() {
+  return (
+    <div className="auth-container" style={{ maxWidth: '400px', margin: 'auto' }}>
+      <Auth
+        supabaseClient={supabase}
+        appearance={{ theme: ThemeSupa }}
+        providers={['google', 'github']} // Example social providers
+      />
+    </div>
+  );
 }
 ```
 
-### 4.1.3. Customization
+## 4.2. A Complete Auth Provider and Context
 
-You can customize the appearance of the Auth UI to match your application's branding by overriding the theme.
+Managing auth state in the top-level `App` component is fine for small apps, but for a more robust solution, we should use a React Context. This allows any component in the application to access the current user and session without prop-drilling.
 
+### Step 1: Create the `AuthContext`
+Create a new file at `jsx/App/AuthContext.jsx`:
 ```javascript
-<Auth
-  supabaseClient={supabase}
-  appearance={{
-    theme: {
-      default: {
-        colors: {
-          brand: 'hsl(153.6, 64%, 44.8%)',
-          brandAccent: 'hsl(153.6, 64%, 34.8%)',
-          // ...
-        },
-      },
-    },
-  }}
-/>
-```
+// jsx/App/AuthContext.jsx
+import React, { createContext, useState, useEffect, useContext } from 'react';
+import { supabase } from '../supabaseClient';
 
-## 4.2. Managing User Sessions
+const AuthContext = createContext();
 
-### 4.2.1. Getting User Data
+export function AuthProvider({ children }) {
+  const [session, setSession] = useState(null);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-Once a user is logged in, you can get their data from the session object:
+  useEffect(() => {
+    // Get the initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
 
-```javascript
-const { user } = session;
-console.log(user);
-```
+    // Set up a listener for auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        setLoading(false);
+      }
+    );
 
-The `user` object contains information like the user's ID, email, and any other metadata.
+    // Clean up the listener on unmount
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
 
-### 4.2.2. Signing Out
+  // The value provided to the context consumers
+  const value = {
+    session,
+    user,
+    signOut: () => supabase.auth.signOut(),
+  };
 
-To sign out a user, you can call the `signOut` method:
-
-```javascript
-const handleSignOut = async () => {
-  const { error } = await supabase.auth.signOut();
-  if (error) {
-    console.error('Error signing out:', error);
+  // Show a loading indicator while the initial session is being fetched
+  if (loading) {
+    return <div>Loading...</div>;
   }
-};
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+// Custom hook to use the AuthContext
+export function useAuth() {
+  return useContext(AuthContext);
+}
 ```
 
-You can add a "Sign Out" button to your `Header.jsx` component that calls this function.
+### Step 2: Wrap Your Application in the `AuthProvider`
+Now, go to your main application entry point (`jsx/AppContainer.jsx` or `index.js`) and wrap your `App` component with the `AuthProvider`.
 
-## 4.3. Protected Routes
+```javascript
+// jsx/AppContainer.jsx (or similar entry point)
+// ...
+import { AuthProvider } from './App/AuthContext.jsx';
+import { App } from './App/App.jsx';
 
-To prevent unauthenticated users from accessing certain parts of your application, you can create a protected route component.
+// ...
+ReactDOM.render(
+  <AuthProvider>
+    <App />
+  </AuthProvider>,
+  document.getElementById('app-container')
+);
+```
+
+### Step 3: Use the `useAuth` Hook
+Now, any component can easily access the auth state. For example, in `App.jsx`:
+
+```javascript
+// jsx/App/App.jsx
+import React from 'react';
+import { useAuth } from './AuthContext.jsx';
+import { Login } from './Login.jsx';
+import { Header } from './Header.jsx';
+// ... other imports
+
+export function App() {
+  const { user } = useAuth();
+
+  if (!user) {
+    return <Login />;
+  }
+
+  return (
+    <LocaleProvider>
+        <Header />
+        {/* ... rest of your app */}
+    </LocaleProvider>
+  );
+}
+```
+
+## 4.3. Protected Routes with the `useAuth` Hook
+
+Now that we have our `useAuth` hook, creating a protected route component is clean and easy.
 
 ```javascript
 // jsx/App/ProtectedRoute.jsx
 import React from 'react';
 import { Route, Redirect } from 'react-router-dom';
-import { useAuth } from './AuthContext'; // You would need to create an AuthContext
+import { useAuth } from './AuthContext.jsx';
 
 export function ProtectedRoute({ component: Component, ...rest }) {
   const { user } = useAuth();
@@ -135,125 +163,123 @@ export function ProtectedRoute({ component: Component, ...rest }) {
     <Route
       {...rest}
       render={(props) =>
-        user ? <Component {...props} /> : <Redirect to="/login" />
+        user ? <Component {...props} /> : <Redirect to="/" />
       }
     />
   );
 }
 ```
+You can now use this component in your router setup to protect routes that should only be accessible to logged-in users.
 
-You would then use this component in your router setup in `Header.jsx`:
+## 4.4. Row Level Security (RLS) for Private Stories
 
-```javascript
-// jsx/App/Header.jsx
-// ...
-import { ProtectedRoute } from './ProtectedRoute.jsx';
-// ...
-<Switch>
-  <ProtectedRoute exact path="/story/:id" component={Story} />
-  {/* ... other routes */}
-</Switch>
-```
-*(Note: This requires a more advanced setup with a React Context for authentication state management, which is beyond the scope of this initial guide but is a recommended practice.)*
+Based on the requirement that all stories should be private and only viewable by manually verified tribal members, we need a robust RLS strategy. This involves creating a `profiles` table to store a "verified" status for each user.
 
-## 4.4. Advanced Authentication Strategies
+### Step 1: Create a `profiles` Table
 
-### 4.4.1. Social Providers (OAuth)
-
-Supabase makes it easy to add social login providers.
-
-1.  **Enable the provider in Supabase**: In your Supabase dashboard, go to "Authentication" -> "Providers" and enable the providers you want to use (e.g., Google, GitHub). You will need to provide the client ID and secret from the provider's developer console.
-2.  **Add the provider to the Auth UI**: The Auth UI will automatically detect the enabled providers and display buttons for them. You can also specify them explicitly:
-
-    ```javascript
-    <Auth supabaseClient={supabase} providers={['google', 'github']} />
-    ```
-
-### 4.4.2. Passwordless Login (Magic Links)
-
-To implement passwordless login, you can use the `signInWithOtp` method. The user will receive an email with a magic link to log in.
-
-```javascript
-const handlePasswordlessLogin = async (email) => {
-  const { error } = await supabase.auth.signInWithOtp({
-    email: email,
-  });
-  if (error) {
-    console.error('Error sending magic link:', error);
-  } else {
-    alert('Check your email for the magic link!');
-  }
-};
-```
-
-## 4.5. Row Level Security (RLS) in Depth
-
-RLS is a powerful feature of Postgres that allows you to control who can access and modify data in your tables. This is crucial for building secure applications.
-
-Let's create a set of RLS policies for our `stories` table to allow users to manage their own stories.
-
-### Step 1: Add a `user_id` Column
-
-First, we need to associate stories with users. We'll add a `user_id` column to the `stories` table that references the `id` of the user in the `auth.users` table.
+We will create a `profiles` table to store public-facing user data and our custom verification flag. This is a best practice, as the `auth.users` table should be considered private.
 
 ```sql
+-- Create a table for public user profiles
+CREATE TABLE public.profiles (
+  id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  updated_at timestamptz,
+  username text,
+  full_name text,
+  avatar_url text,
+  is_verified_member boolean NOT NULL DEFAULT false,
+
+  CONSTRAINT profiles_pkey PRIMARY KEY (id),
+  CONSTRAINT username_length CHECK (char_length(username) >= 3)
+);
+
+-- Set up Row Level Security (RLS) for the profiles table itself
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public profiles are viewable by everyone." ON public.profiles
+  FOR SELECT USING (true);
+
+CREATE POLICY "Users can insert their own profile." ON public.profiles
+  FOR INSERT WITH CHECK (auth.uid() = id);
+
+CREATE POLICY "Users can update own profile." ON public.profiles
+  FOR UPDATE USING (auth.uid() = id);
+```
+
+### Step 2: Auto-create Profiles for New Users
+
+We'll use a trigger to automatically create a row in `public.profiles` for every new user, populating it with data from the sign-up.
+
+```sql
+-- This trigger automatically creates a profile for new users.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, full_name, avatar_url)
+  VALUES (new.id, new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'avatar_url');
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+```
+
+### Step 3: The Manual Verification Process
+
+An administrator will need to manually verify users. The process is simple:
+
+1.  Go to the Supabase dashboard.
+2.  Navigate to the "Table Editor" and select the `profiles` table.
+3.  Find the row for the user you want to verify.
+4.  Change the value in the `is_verified_member` column from `false` to `true`.
+
+### Step 4: Create RLS Policies for the `stories` Table
+
+Now we can create the RLS policy for the `stories` table that enforces our new privacy rule.
+
+```sql
+-- Add the user_id column to the stories table if it doesn't exist
 ALTER TABLE public.stories
-ADD COLUMN user_id uuid REFERENCES auth.users(id);
-```
+ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL;
 
-### Step 2: Enable RLS
-
-Next, we need to enable RLS on the `stories` table.
-
-```sql
+-- Enable RLS on the stories table
 ALTER TABLE public.stories ENABLE ROW LEVEL SECURITY;
+
+-- Drop any previous, more permissive select policies
+DROP POLICY IF EXISTS "Allow public read access" ON public.stories;
+
+-- Create the new policy for verified members
+CREATE POLICY "Verified members can view all stories."
+ON public.stories
+FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.profiles
+    WHERE profiles.id = auth.uid() AND profiles.is_verified_member = true
+  )
+);
+
+-- Policies for insert, update, delete can remain the same
+-- (e.g., allow authenticated users to insert)
+-- or be updated to also require verified status.
+-- For now, we'll assume any authenticated user can upload.
+CREATE POLICY "Authenticated users can insert stories"
+ON public.stories
+FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own stories"
+ON public.stories
+FOR UPDATE
+USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own stories"
+ON public.stories
+FOR DELETE
+USING (auth.uid() = user_id);
 ```
 
-By default, this will deny all access to the table. We now need to create policies to grant access.
-
-### Step 3: Create RLS Policies
-
-Here are the policies we will create:
-
-1.  **Allow users to view all stories**: For LingView, we likely want all users (even unauthenticated ones) to be able to view stories.
-
-    ```sql
-    CREATE POLICY "Allow public read access"
-    ON public.stories
-    FOR SELECT
-    USING (true);
-    ```
-
-2.  **Allow authenticated users to insert their own stories**:
-
-    ```sql
-    CREATE POLICY "Allow authenticated users to insert their own stories"
-    ON public.stories
-    FOR INSERT
-    WITH CHECK (auth.uid() = user_id);
-    ```
-    The `WITH CHECK` clause ensures that the `user_id` of the new row matches the ID of the currently authenticated user.
-
-3.  **Allow users to update their own stories**:
-
-    ```sql
-    CREATE POLICY "Allow users to update their own stories"
-    ON public.stories
-    FOR UPDATE
-    USING (auth.uid() = user_id);
-    ```
-
-4.  **Allow users to delete their own stories**:
-
-    ```sql
-    CREATE POLICY "Allow users to delete their own stories"
-    ON public.stories
-    FOR DELETE
-    USING (auth.uid() = user_id);
-    ```
-
-With these policies in place, users will have full control over the stories they create, while still being able to view all public stories. This provides a powerful and flexible security model for the application.
-
-## 4.6. Custom JWTs
-
-For very advanced use cases, such as integrating with an existing authentication system, Supabase allows you to use custom JWTs. This involves signing your own JWTs with your Supabase project's secret and then using them to authenticate with the Supabase API. This topic is beyond the scope of this guide, but you can find more information in the official Supabase documentation.
+With this setup, only users who have been manually marked as `is_verified_member = true` in the `profiles` table will be able to `SELECT` data from the `stories` table. All other users will receive an empty array when they query the table.
